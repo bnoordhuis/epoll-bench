@@ -20,22 +20,26 @@
 
 #define SAVE_ERRNO(block) do { int errno_ = errno; { block; } errno = errno_; } while (0)
 
+typedef struct {
+  int fd;
+  unsigned int readable:1;
+  unsigned int writable:1;
+} peer_t;
+
 static int tmfd = -1;
 static int epfd = -1;
 static int npeers;
 
 static unsigned long bytes_read;
 static unsigned long bytes_written;
-static unsigned long conns_closed;
 
 
 static void do_report(void) {
   printf(
     "=====================\n"
     "%lu bytes read\n"
-    "%lu bytes written\n"
-    "%lu sockets closed\n",
-    bytes_read, bytes_written, conns_closed);
+    "%lu bytes written\n",
+    bytes_read, bytes_written);
 
   bytes_read = 0;
   bytes_written = 0;
@@ -49,15 +53,12 @@ static int do_close(int fd) {
     r = close(fd);
   while (r == -1 && errno == EINTR);
 
-  if (r != -1)
-    conns_closed++;
-
   return r;
 }
 
 
-static int add_fd(int fd, int events) {
-  struct epoll_event ee = { .data.fd = fd, .events = events | EPOLLET };
+static int add_fd(int fd, void *arg, int events) {
+  struct epoll_event ee = { .data.ptr = arg, .events = events | EPOLLET };
   return epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ee);
 }
 
@@ -138,20 +139,11 @@ static int do_send(int fd, const void *data, size_t size) {
 
 
 static int do_epoll(void) {
-  struct { int fd, events; } updates[1024];
   struct epoll_event out[1024];
-  int nupdates;
-  int i, r, n;
+  peer_t *peer;
+  int i, n, r;
   int events;
   int fd;
-
-#define UPDATE(fd_, events_) \
-  do { \
-    updates[nupdates].fd = fd_; \
-    updates[nupdates].events = events_; \
-    nupdates++; \
-  } \
-  while (0)
 
   do
     n = epoll_wait(epfd, out, ARRAY_SIZE(out), -1);
@@ -160,11 +152,10 @@ static int do_epoll(void) {
   if (n == -1)
     return -1;
 
-  nupdates = 0;
-
   for (i = 0; i < n; i++) {
     events = out[i].events;
-    fd = out[i].data.fd;
+    peer = out[i].data.ptr;
+    fd = peer->fd;
 
     if (events & ~(EPOLLIN|EPOLLOUT))
       return -1;
@@ -176,29 +167,21 @@ static int do_epoll(void) {
       continue;
     }
 
-    if (events & EPOLLIN) {
+    if (peer->readable && (events & EPOLLIN)) {
       if ((r = do_recv(fd)) == -1)
         return -1;
       else
-        UPDATE(fd, EPOLLOUT);
+        peer->readable = 0, peer->writable = 1;
     }
 
-    if (events & EPOLLOUT) {
+    if (peer->writable  && (events & EPOLLOUT)) {
       const char reply[] = "PING";
 
       if ((r = do_send(fd, reply, sizeof(reply) - 1)) == -1)
         return -1;
       else
-        UPDATE(fd, EPOLLIN);
+        peer->readable = 1, peer->writable = 0;
     }
-  }
-
-  for (i = 0; i < nupdates; i++) {
-    struct epoll_event ee = {
-      .events = updates[i].events | EPOLLET,
-      .data.fd = updates[i].fd,
-    };
-    epoll_ctl(epfd, EPOLL_CTL_MOD, updates[i].fd, &ee);
   }
 
   return 0;
@@ -206,6 +189,8 @@ static int do_epoll(void) {
 
 
 int main(int argc, char **argv) {
+  peer_t *peers;
+  peer_t tmp;
   int i, r;
 
   (void) argc;
@@ -223,17 +208,23 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  if (add_fd(tmfd, EPOLLIN)) {
+  tmp.fd = tmfd;
+  if (add_fd(tmfd, &tmp, EPOLLIN)) {
     perror("add_fd");
     exit(1);
   }
 
-  for (i = 0; i < npeers; i++) {
-    int fd;
+  if ((peers = calloc(npeers, sizeof(peers[0]))) == NULL) {
+    perror("malloc");
+    exit(1);
+  }
 
-    if ((fd = make_sock_fd(PORT + i)) == -1)
+  for (i = 0; i < npeers; i++) {
+    peers[i].readable = 0;
+    peers[i].writable = 1;
+    if ((peers[i].fd = make_sock_fd(PORT + i)) == -1)
       perror("make_sock_fd");
-    else if (add_fd(fd, EPOLLOUT))
+    else if (add_fd(peers[i].fd, &peers[i], EPOLLIN|EPOLLOUT))
       perror("add_fd");
   }
 
