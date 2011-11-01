@@ -1,10 +1,15 @@
-.PHONY:	all clean
+.PHONY:	all clean udp-bench tcp-bench
 
-all:	bench.o
-	$(CC) -o bench $^ $(LDFLAGS)
+all:	udp-bench tcp-bench
+
+udp-bench:	udp-bench.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+tcp-bench:	tcp-bench.o
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 clean:
-	rm -rf bench bench.o
+	rm -rf *.o udp-bench tcp-bench
 
 .c.o:
 	$(CC) -Wall -Wextra -std=c99 $(CFLAGS) -c -o $@ $<
