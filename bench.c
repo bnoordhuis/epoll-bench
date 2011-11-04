@@ -37,7 +37,6 @@ static int npeers;
 
 static unsigned long bytes_read;
 static unsigned long bytes_written;
-static unsigned long conns_closed;
 
 
 struct epoll_ctl_event {
@@ -58,9 +57,8 @@ static void do_report(void) {
   printf(
     "=====================\n"
     "%lu bytes read\n"
-    "%lu bytes written\n"
-    "%lu sockets closed\n",
-    bytes_read, bytes_written, conns_closed);
+    "%lu bytes written\n",
+    bytes_read, bytes_written);
 
   bytes_read = 0;
   bytes_written = 0;
@@ -73,9 +71,6 @@ static int do_close(int fd) {
   do
     r = close(fd);
   while (r == -1 && errno == EINTR);
-
-  if (r != -1)
-    conns_closed++;
 
   return r;
 }
