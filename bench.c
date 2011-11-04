@@ -7,11 +7,22 @@
 #include <assert.h>
 #include <errno.h>
 
+#include <sys/syscall.h>
 #include <sys/timerfd.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <unistd.h>
+
+#ifndef __NR_epoll_ctlv
+# if __x86_64__
+#  define __NR_epoll_ctlv 312
+# elif __i386__
+#  define __NR_epoll_ctlv 349
+# else
+#  error "arch not supported"
+# endif
+#endif
 
 #define ADDR  INADDR_LOOPBACK
 #define PORT  34567
@@ -27,6 +38,20 @@ static int npeers;
 static unsigned long bytes_read;
 static unsigned long bytes_written;
 static unsigned long conns_closed;
+
+
+struct epoll_ctl_event {
+  int fd;
+  int op;
+  struct epoll_event event;
+} EPOLL_PACKED;
+
+
+#if HAVE_EPOLL_CTLV
+static int epoll_ctlv(int epfd, struct epoll_ctl_event *events, int nevents) {
+  return syscall(__NR_epoll_ctlv, epfd, events, nevents);
+}
+#endif
 
 
 static void do_report(void) {
@@ -138,18 +163,20 @@ static int do_send(int fd, const void *data, size_t size) {
 
 
 static int do_epoll(void) {
-  struct { int fd, events; } updates[1024];
+  struct epoll_ctl_event events[1024];
   struct epoll_event out[1024];
-  int nupdates;
+  int nevents;
   int i, r, n;
-  int events;
+  int flags;
   int fd;
 
 #define UPDATE(fd_, events_) \
   do { \
-    updates[nupdates].fd = fd_; \
-    updates[nupdates].events = events_; \
-    nupdates++; \
+    events[nevents].fd = fd_; \
+    events[nevents].op = EPOLL_CTL_MOD; \
+    events[nevents].event.events = (events_) | EPOLLET; \
+    events[nevents].event.data.fd = fd_; \
+    nevents++; \
   } \
   while (0)
 
@@ -160,13 +187,13 @@ static int do_epoll(void) {
   if (n == -1)
     return -1;
 
-  nupdates = 0;
+  nevents = 0;
 
   for (i = 0; i < n; i++) {
-    events = out[i].events;
+    flags = out[i].events;
     fd = out[i].data.fd;
 
-    if (events & ~(EPOLLIN|EPOLLOUT))
+    if (flags & ~(EPOLLIN|EPOLLOUT))
       return -1;
 
     if (fd == tmfd) {
@@ -176,14 +203,14 @@ static int do_epoll(void) {
       continue;
     }
 
-    if (events & EPOLLIN) {
+    if (flags & EPOLLIN) {
       if ((r = do_recv(fd)) == -1)
         return -1;
       else
         UPDATE(fd, EPOLLOUT);
     }
 
-    if (events & EPOLLOUT) {
+    if (flags & EPOLLOUT) {
       const char reply[] = "PING";
 
       if ((r = do_send(fd, reply, sizeof(reply) - 1)) == -1)
@@ -193,13 +220,18 @@ static int do_epoll(void) {
     }
   }
 
-  for (i = 0; i < nupdates; i++) {
-    struct epoll_event ee = {
-      .events = updates[i].events | EPOLLET,
-      .data.fd = updates[i].fd,
-    };
-    epoll_ctl(epfd, EPOLL_CTL_MOD, updates[i].fd, &ee);
+#if HAVE_EPOLL_CTLV
+  n = epoll_ctlv(epfd, events, nevents);
+  if (n == -1)
+    perror("epoll_ctlv");
+  else if (n != nevents)
+    fprintf(stderr, "WARN: %d of %d events processed\n", n, nevents);
+#else
+  for (i = 0; i < nevents; i++) {
+    if (epoll_ctl(epfd, events[i].op, events[i].fd, &events[i].event) == -1)
+      perror("epoll_ctl");
   }
+#endif
 
   return 0;
 }
