@@ -14,6 +14,12 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
+#include <linux/types.h> /* __u32, __u64 */
+
+#ifndef EPOLL_PACKED
+# define EPOLL_PACKED __attribute__((__packed__))
+#endif
+
 #ifndef __NR_epoll_ctlv
 # if __x86_64__
 #  define __NR_epoll_ctlv 312
@@ -40,9 +46,10 @@ static unsigned long bytes_written;
 
 
 struct epoll_ctl_event {
-  int fd;
-  int op;
-  struct epoll_event event;
+  __u32 events;
+  __u64 data;
+  __u32 op;
+  __u32 fd;
 } EPOLL_PACKED;
 
 
@@ -170,8 +177,8 @@ static int do_epoll(void) {
   do { \
     events[nevents].fd = fd_; \
     events[nevents].op = EPOLL_CTL_MOD; \
-    events[nevents].event.events = (events_) | EPOLLET; \
-    events[nevents].event.data.fd = fd_; \
+    events[nevents].data = fd_; \
+    events[nevents].events = (events_) | EPOLLET; \
     nevents++; \
   } \
   while (0)
@@ -224,7 +231,7 @@ static int do_epoll(void) {
     fprintf(stderr, "WARN: %d of %d events processed\n", n, nevents);
 #else
   for (i = 0; i < nevents; i++) {
-    if (epoll_ctl(epfd, events[i].op, events[i].fd, &events[i].event) == -1)
+    if (epoll_ctl(epfd, events[i].op, events[i].fd, (struct epoll_event *) &events[i]) == -1)
       perror("epoll_ctl");
   }
 #endif
