@@ -59,6 +59,7 @@ static void do_report(void) {
     "%lu bytes read\n"
     "%lu bytes written\n",
     bytes_read, bytes_written);
+  fflush(stdout);
 
   bytes_read = 0;
   bytes_written = 0;
